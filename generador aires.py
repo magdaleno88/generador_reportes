@@ -147,6 +147,24 @@ def categorias_estrictas():
     return ("MINISPLIT", "UMA", "PAQUETE", "CHILLER", "BOMBA", "TORRE", "EXTRACTOR")
 
 
+def categoria_para_filtro(equipo):
+    return detectar_categoria_equipo(equipo) or "SIN_CATEGORIA"
+
+
+def ordenar_categorias(categorias):
+    conocidas = list(categorias_estrictas())
+    extras = sorted(c for c in categorias if c not in conocidas)
+    return [c for c in conocidas if c in categorias] + extras
+
+
+def contar_categorias(equipos):
+    conteos = {}
+    for equipo in equipos:
+        categoria = categoria_para_filtro(equipo)
+        conteos[categoria] = conteos.get(categoria, 0) + 1
+    return conteos
+
+
 # ================= BASE DE DATOS =================
 
 
@@ -835,6 +853,10 @@ class GeneradorApp:
         self.unidad_var = tk.StringVar()
         self.servicio_var = tk.StringVar(value="Ambos")
         self.resumen_var = tk.StringVar(value="Busca y selecciona una unidad medica.")
+        self.contador_categorias_var = tk.StringVar(value="Equipos incluidos: 0 de 0")
+        self.todas_categorias_var = tk.BooleanVar(value=True)
+        self.categoria_vars = {}
+        self.categorias_disponibles = []
         self.ruta_vars = {
             categoria: tk.StringVar(value=str(ruta))
             for categoria, ruta in RUTAS_FOTOS.items()
@@ -865,7 +887,7 @@ class GeneradorApp:
         ttk.Label(contenedor, text="Unidad medica").grid(row=3, column=0, sticky="w", pady=4)
         self.unidad_combo = ttk.Combobox(contenedor, textvariable=self.unidad_var, state="readonly")
         self.unidad_combo.grid(row=3, column=1, sticky="ew", padx=8, pady=4)
-        self.unidad_combo.bind("<<ComboboxSelected>>", lambda _event: self._actualizar_resumen())
+        self.unidad_combo.bind("<<ComboboxSelected>>", lambda _event: self._actualizar_categorias())
 
         ttk.Label(contenedor, text="Servicio").grid(row=4, column=0, sticky="w", pady=4)
         servicio_combo = ttk.Combobox(
@@ -876,13 +898,33 @@ class GeneradorApp:
             width=18,
         )
         servicio_combo.grid(row=4, column=1, sticky="w", padx=8, pady=4)
-        servicio_combo.bind("<<ComboboxSelected>>", lambda _event: self._actualizar_resumen())
+        servicio_combo.bind("<<ComboboxSelected>>", lambda _event: self._actualizar_categorias())
+
+        self.marco_categorias = ttk.LabelFrame(contenedor, text="Categorías de equipos", padding=10)
+        self.marco_categorias.grid(row=5, column=0, columnspan=3, sticky="ew", pady=8)
+        self.marco_categorias.columnconfigure(0, weight=1)
+
+        controles_categorias = ttk.Frame(self.marco_categorias)
+        controles_categorias.grid(row=0, column=0, sticky="ew")
+        controles_categorias.columnconfigure(3, weight=1)
+        ttk.Checkbutton(
+            controles_categorias,
+            text="Todas las categorías",
+            variable=self.todas_categorias_var,
+            command=self._toggle_todas_categorias,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Button(controles_categorias, text="Seleccionar todas", command=self._seleccionar_todas_categorias).grid(row=0, column=1, padx=4)
+        ttk.Button(controles_categorias, text="Deseleccionar todas", command=self._deseleccionar_todas_categorias).grid(row=0, column=2, padx=4)
+        ttk.Label(controles_categorias, textvariable=self.contador_categorias_var).grid(row=0, column=3, sticky="e")
+
+        self.categorias_frame = ttk.Frame(self.marco_categorias)
+        self.categorias_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
         resumen = ttk.Label(contenedor, textvariable=self.resumen_var, justify="left")
-        resumen.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        resumen.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(8, 4))
 
         marco_fotos = ttk.LabelFrame(contenedor, text="Carpetas de fotos", padding=10)
-        marco_fotos.grid(row=6, column=0, columnspan=3, sticky="nsew", pady=12)
+        marco_fotos.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=12)
         marco_fotos.columnconfigure(1, weight=1)
 
         for fila, (categoria, variable) in enumerate(self.ruta_vars.items()):
@@ -895,15 +937,15 @@ class GeneradorApp:
             ).grid(row=fila, column=2, pady=3)
 
         acciones = ttk.Frame(contenedor)
-        acciones.grid(row=7, column=0, columnspan=3, sticky="ew", pady=8)
+        acciones.grid(row=8, column=0, columnspan=3, sticky="ew", pady=8)
         acciones.columnconfigure(0, weight=1)
         ttk.Button(acciones, text="Reconstruir base local", command=self._reconstruir_base).grid(row=0, column=0, sticky="w")
         self.boton_generar = ttk.Button(acciones, text="Generar reportes", command=self._generar)
         self.boton_generar.grid(row=0, column=1, sticky="e")
 
         self.log_text = tk.Text(contenedor, height=10, wrap="word")
-        self.log_text.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-        contenedor.rowconfigure(8, weight=1)
+        self.log_text.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        contenedor.rowconfigure(9, weight=1)
 
         self._actualizar_unidades()
 
@@ -956,27 +998,90 @@ class GeneradorApp:
                 self.unidad_var.set(self.unidades_actuales[0])
         else:
             self.unidad_var.set("")
-        self._actualizar_resumen()
+        self._actualizar_categorias()
 
-    def _equipos_seleccionados(self):
+    def _equipos_base_seleccionados(self):
         unidad = self.unidad_var.get()
         if not unidad:
             return []
         return obtener_equipos(unidad, self.servicio_var.get())
 
+    def _actualizar_categorias(self):
+        equipos = self._equipos_base_seleccionados()
+        conteos = contar_categorias(equipos)
+        self.categorias_disponibles = ordenar_categorias(conteos.keys())
+        self.categoria_vars = {}
+
+        for widget in self.categorias_frame.winfo_children():
+            widget.destroy()
+
+        for indice, categoria in enumerate(self.categorias_disponibles):
+            var = tk.BooleanVar(value=True)
+            self.categoria_vars[categoria] = var
+            texto = f"{categoria} ({conteos[categoria]} equipos)"
+            ttk.Checkbutton(
+                self.categorias_frame,
+                text=texto,
+                variable=var,
+                command=self._categoria_cambio,
+            ).grid(row=indice // 3, column=indice % 3, sticky="w", padx=(0, 18), pady=2)
+
+        self.todas_categorias_var.set(True)
+        self._actualizar_resumen()
+
+    def _categorias_seleccionadas(self):
+        return [categoria for categoria, var in self.categoria_vars.items() if var.get()]
+
+    def _toggle_todas_categorias(self):
+        valor = self.todas_categorias_var.get()
+        for var in self.categoria_vars.values():
+            var.set(valor)
+        self._actualizar_resumen()
+
+    def _seleccionar_todas_categorias(self):
+        self.todas_categorias_var.set(True)
+        for var in self.categoria_vars.values():
+            var.set(True)
+        self._actualizar_resumen()
+
+    def _deseleccionar_todas_categorias(self):
+        self.todas_categorias_var.set(False)
+        for var in self.categoria_vars.values():
+            var.set(False)
+        self._actualizar_resumen()
+
+    def _categoria_cambio(self):
+        todas = bool(self.categoria_vars) and all(var.get() for var in self.categoria_vars.values())
+        self.todas_categorias_var.set(todas)
+        self._actualizar_resumen()
+
+    def _equipos_seleccionados(self):
+        equipos = self._equipos_base_seleccionados()
+        seleccionadas = self._categorias_seleccionadas()
+        if len(seleccionadas) == len(self.categorias_disponibles):
+            return equipos
+        seleccionadas = set(seleccionadas)
+        return [equipo for equipo in equipos if categoria_para_filtro(equipo) in seleccionadas]
+
     def _actualizar_resumen(self):
         unidad = self.unidad_var.get()
         servicio = self.servicio_var.get()
+        equipos_base = self._equipos_base_seleccionados()
         equipos = self._equipos_seleccionados()
         preventivos, correctivos = contar_servicios(equipos)
+        categorias = self._categorias_seleccionadas()
+        categorias_texto = ", ".join(categorias) if categorias else "Ninguna"
+        self.contador_categorias_var.set(f"Equipos incluidos: {len(equipos)} de {len(equipos_base)}")
         self.resumen_var.set(
             "Hospital seleccionado: {unidad}\n"
             "Tipo de servicio: {servicio}\n"
-            "Total de equipos encontrados: {total}\n"
+            "Categorías seleccionadas: {categorias}\n"
+            "Cantidad total de equipos que se generarán: {total}\n"
             "Total preventivos: {preventivos}\n"
             "Total correctivos: {correctivos}".format(
                 unidad=unidad or "Sin seleccion",
                 servicio=servicio,
+                categorias=categorias_texto,
                 total=len(equipos),
                 preventivos=preventivos,
                 correctivos=correctivos,
@@ -994,10 +1099,14 @@ class GeneradorApp:
     def _generar(self):
         unidad = self.unidad_var.get()
         servicio = self.servicio_var.get()
+        categorias = self._categorias_seleccionadas()
         equipos = self._equipos_seleccionados()
 
         if not unidad:
             messagebox.showerror("Unidad requerida", "Busca y selecciona una unidad medica.")
+            return
+        if not categorias:
+            messagebox.showwarning("Categorías requeridas", "Selecciona al menos una categoria de equipos.")
             return
         if not equipos:
             messagebox.showwarning("Sin equipos", "No hay equipos para la unidad y servicio seleccionados.")

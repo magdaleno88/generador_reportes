@@ -1,0 +1,191 @@
+[1mdiff --git a/generador aires.py b/generador aires.py[m
+[1mnew file mode 100644[m
+[1mindex 0000000..a86f79b[m
+[1m--- /dev/null[m
+[1m+++ b/generador aires.py[m	
+[36m@@ -0,0 +1,1056 @@[m
+[32m+[m[32mimport csv[m
+[32m+[m[32mimport json[m
+[32m+[m[32mimport multiprocessing[m
+[32m+[m[32mimport os[m
+[32m+[m[32mimport random[m
+[32m+[m[32mimport re[m
+[32m+[m[32mimport sqlite3[m
+[32m+[m[32mimport threading[m
+[32m+[m[32mimport tkinter as tk[m
+[32m+[m[32mimport unicodedata[m
+[32m+[m[32mfrom concurrent.futures import ProcessPoolExecutor[m
+[32m+[m[32mfrom itertools import combinations, combinations_with_replacement[m
+[32m+[m[32mfrom math import comb[m
+[32m+[m[32mfrom pathlib import Path[m
+[32m+[m[32mfrom tkinter import filedialog, messagebox, ttk[m
+[32m+[m
+[32m+[m[32mfrom docx import Document[m
+[32m+[m[32mfrom docx.oxml import OxmlElement[m
+[32m+[m[32mfrom docx.oxml.ns import qn[m
+[32m+[m[32mfrom docx.shared import Pt[m
+[32m+[m[32mfrom docxcompose.composer import Composer[m
+[32m+[m[32mfrom PIL import Image as PILImage[m
+[32m+[m
+[32m+[m[32m# ================= CONFIG =================[m
+[32m+[m
+[32m+[m[32mBASE_DIR = Path(__file__).resolve().parent[m
+[32m+[m[32mTEMPLATE_PATH = BASE_DIR / "template_2.docx"[m
+[32m+[m[32mOUTPUT_FOLDER = BASE_DIR / "output"[m
+[32m+[m[32mJSON_PATH = BASE_DIR / "base_datos_rf_ferems_CORREGIDA.json"[m
+[32m+[m[32mCSV_PATH = BASE_DIR / "base_datos_rf_ferems_CORREGIDA.csv"[m
+[32m+[m[32mOLD_JSON_PATH = BASE_DIR / "base_datos_rf_ferems.json"[m
+[32m+[m[32mOLD_CSV_PATH = BASE_DIR / "base_datos_rf_ferems.csv"[m
+[32m+[m[32mDB_PATH = BASE_DIR / "equipos.db"[m
+[32m+[m[32mIMAGENES_POR_REPORTE = 3[m
+[32m+[m[32mSERVICIOS = ("Preventivo", "Correctivo", "Ambos")[m
+[32m+[m[32mIMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")[m
+[32m+[m[32mMINISPLIT_SUBCARPETAS = ("completo", "compresor", "partes")[m
+[32m+[m
+[32m+[m[32mOUTPUT_FOLDER.mkdir(exist_ok=True)[m
+[32m+[m
+[32m+[m[32m# ================= CARPETAS DE FOTOS =================[m
+[32m+[m
+[32m+[m[32mRUTAS_FOTOS = {[m
+[32m+[m[32m    "MINISPLIT": BASE_DIR / "1-Minisplit",[m
+[32m+[m[32m    "UMA": BASE_DIR / "3-Uma",[m
+[32m+[m[32m    "PAQUETE": BASE_DIR / "2-Paquete",[m
+[32m+[m[32m    "CHILLER": BASE_DIR / "chiller raymundo 2026",[m
+[32m+[m[32m    "BOMBA": BASE_DIR / "bombas raymundo 2026",[m
+[32m+[m[32m    "TORRE": BASE_DIR / "torres 2026 raymundo",[m
+[32m+[m[32m    "EXTRACTOR": BASE_DIR / "5-extractor",[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mDB_COLUMNS = ([m
+[32m+[m[32m    "folio",[m
+[32m+[m[32m    "servicio",[m
+[32m+[m[32m    "region",[m
+[32m+[m[32m    "unidad",[m
+[32m+[m[32m    "marca",[m
+[32m+[m[32m    "modelo",[m
+[32m+[m[32m    "serie",[m
+[32m+[m[32m    "inventario",[m
+[32m+[m[32m    "equipo",[m
+[32m+[m[32m    "categoria",[m
+[32m+[m[32m    "tipo",[m
+[32m+[m[32m    "pagina_pdf",[m
+[32m+[m[32m)[m
+[32m+[m
+[32m+[m[32m# ================= UTILIDADES =================[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef normalizar_texto(valor):[m
+[32m+[m[32m    texto = "" if valor is None else str(valor)[m
+[32m+[m[32m    texto = unicodedata.normalize("NFKD", texto)[m
+[32m+[m[32m    texto = "".join(c for c in texto if not unicodedata.combining(c))[m
+[32m+[m[32m    return texto.casefold().strip()[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef normalizar_clave(valor):[m
+[32m+[m[32m    texto = normalizar_texto(valor)[m
+[32m+[m[32m    texto = re.sub(r"[\.\-_]+", " ", texto)[m
+[32m+[m[32m    texto = re.sub(r"\s+", " ", texto).strip()[m
+[32m+[m[32m    return texto[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef normalizar_categoria(valor):[m
+[32m+[m[32m    texto = normalizar_clave(valor)[m
+[32m+[m[32m    compacto = texto.replace(" ", "")[m
+[32m+[m
+[32m+[m[32m    if compacto.startswith("minisplit") or "mini split" in texto:[m
+[32m+[m[32m        return "MINISPLIT"[m
+[32m+[m[32m    if compacto.startswith("uma") or "unidad manejadora" in texto:[m
+[32m+[m[32m        return "UMA"[m
+[32m+[m[32m    if "unidad paquete" in texto or "unidad condensadora" in texto or texto == "paquete" or " paquete" in texto:[m
+[32m+[m[32m        return "PAQUETE"[m
+[32m+[m[32m    if "chiller" in texto or "enfriador" in texto:[m
+[32m+[m[32m        return "CHILLER"[m
+[32m+[m[32m    if "bomba" in texto:[m
+[32m+[m[32m        return "BOMBA"[m
+[32m+[m[32m    if "torre" in texto:[m
+[32m+[m[32m        return "TORRE"[m
+[32m+[m[32m    if "extractor" in texto:[m
+[32m+[m[32m        return "EXTRACTOR"[m
+[32m+[m[32m    return None[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef sanitizar_nombre(valor, defecto="sin_nombre"):[m
+[32m+[m[32m    texto = normalizar_texto(valor)[m
+[32m+[m[32m    texto = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", texto)[m
+[32m+[m[32m    texto = re.sub(r"\s+", "_", texto)[m
+[32m+[m[32m    texto = re.sub(r"_+", "_", texto).strip("._ ")[m
+[32m+[m[32m    return texto or defecto[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef servicio_archivo(servicio):[m
+[32m+[m[32m    return sanitizar_nombre(servicio.lower())[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef escribir_log(log_path, mensaje):[m
+[32m+[m[32m    if log_path:[m
+[32m+[m[32m        with open(log_path, "a", encoding="utf-8") as f:[m
+[32m+[m[32m            f.write(str(mensaje) + "\n")[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef obtener_imagenes(directorio):[m
+[32m+[m[32m    directorio = Path(directorio)[m
+[32m+[m[32m    if not directorio.exists():[m
+[32m+[m[32m        return [][m
+[32m+[m[32m    return [[m
+[32m+[m[32m        str(path)[m
+[32m+[m[32m        for path in directorio.iterdir()[m
+[32m+[m[32m        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS[m
+[32m+[m[32m    ][m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef identificar_categoria(nombre):[m
+[32m+[m[32m    return normalizar_categoria(nombre)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef detectar_categoria_equipo(equipo):[m
+[32m+[m[32m    categoria_base = normalizar_categoria(equipo.get("categoria", ""))[m
+[32m+[m[32m    if categoria_base:[m
+[32m+[m[32m        return categoria_base[m
+[32m+[m[32m    return identificar_categoria(equipo.get("equipo", ""))[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef categorias_estrictas():[m
+[32m+[m[32m    return ("MINISPLIT", "UMA", "PAQUETE", "CHILLER", "BOMBA", "TORRE", "EXTRACTOR")[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# ================= BASE DE DATOS =================[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef conectar_db():[m
+[32m+[m[32m    inicializar_db()[m
+[32m+[m[32m    conn = sqlite3.connect(DB_PATH)[m
+[32m+[m[32m    conn.row_factory = sqlite3.Row[m
+[32m+[m[32m    return conn[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef inicializar_db(force_rebuild=False):[m
+[32m+[m[32m    fuente_path, advertencia = resolver_fuente_datos()[m
+[32m+[m[32m    fuente_info = obtener_info_fuente(fuente_path)[m
+[32m+[m[32m    with sqlite3.connect(DB_PATH) as conn:[m
+[32m+[m[32m        conn.execute([m
+[32m+[m[32m            """[m
+[32m+[m[32m            CREATE TABLE IF NOT EXISTS equipos ([m
+[32m+[m[32m                id INTEGER PRIMARY KEY AUTOINCREMENT,[m
+[32m+[m[32m                folio TEXT,[m
+[32m+[m[32m                servicio TEXT,[m
+[32m+[m[32m                region TEXT,[m
+[32m+[m[32m                unidad TEXT,[m
+[32m+[m[32m                marca TEXT,[m
+[32m+[m[32m                modelo TEXT,[m
+[32m+[m[32m                serie TEXT,[m
+[32m+[m[32m                inventario TEXT,[m
+[32m+[m[32m                equipo TEXT,[m
+[32m+[m[32m                categoria TEXT,[m
+[32m+[m[32m                tipo TEXT,[m
+[32m+[m[32m                pagina_pdf INTEGER,[m
+[32m+[m[32m                unidad_norm TEXT,[m
+[32m+[m[32m                folio_norm TEXT,[m
+[32m+[m[32m                inventario_norm TEXT,[m
+[32m+[m[32m                serie_norm TEXT[m
+[32m+[m[32m            )[m
+[32m+[m[32m            

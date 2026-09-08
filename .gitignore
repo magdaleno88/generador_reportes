@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Base local generada
+equipos.db
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Salidas y reportes generados
+output/
+Reportes buenos/
+Reportes_Generados_RX/
+
+# Versiones antiguas del generador
+generador.py
+gene/
+
+# Carpetas de fotografias y material de trabajo
+1-Minisplit/
+2-Paquete/
+3-Uma/
+4-lavadora/
+5-extractor/
+6-casette/
+Entrada/
+Fotos viejas/
+bombas raymundo 2026/
+chiller raymundo 2026/
+hui/
+huitziltepec 2026 ferems 2/
+minisplit 2026 raymundo/
+nin*/
+ocotito fotos 2026/
+torres 2026 raymundo/
+umas 2026 raymundo/
+unidades paquete raymundo 2026/
+
+# Fotografias e imagenes
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.webp
+*.heic
+*.JPG
+*.JPEG
+*.PNG
+*.GIF
+*.BMP
+*.WEBP
+*.HEIC
+
+# Videos
+*.mp4
+*.MP4
+*.mov
+*.MOV
+*.avi
+*.AVI
+
+# PDFs y archivos comprimidos
+*.pdf
+*.PDF
+*.zip
+*.ZIP
+*.rar
+*.RAR
+*.7z
+
+# Documentos de trabajo
+*.docx
+!template_2.docx
+*.xlsx
+*.xls
+*.xlsm
+
+# Bases antiguas
+base_datos_rf_ferems.json
+base_datos_rf_ferems.csv
+
+# Temporales de Word, Windows y sistema
+~$*
+*.tmp
+*.temp
+Thumbs.db
+desktop.ini
+.DS_Store
