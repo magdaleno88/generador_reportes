@@ -42,6 +42,7 @@ OUTPUT_FOLDER.mkdir(exist_ok=True)
 
 RUTAS_FOTOS = {
     "MINISPLIT": BASE_DIR / "1-Minisplit",
+    "CASETTE": BASE_DIR / "6-casette",
     "UMA": BASE_DIR / "3-Uma",
     "PAQUETE": BASE_DIR / "2-Paquete",
     "CHILLER": BASE_DIR / "chiller raymundo 2026",
@@ -86,6 +87,8 @@ def normalizar_categoria(valor):
     texto = normalizar_clave(valor)
     compacto = texto.replace(" ", "")
 
+    if "casette" in texto or "cassette" in texto:
+        return "CASETTE"
     if compacto.startswith("minisplit") or "mini split" in texto:
         return "MINISPLIT"
     if compacto.startswith("uma") or "unidad manejadora" in texto:
@@ -144,7 +147,7 @@ def detectar_categoria_equipo(equipo):
 
 
 def categorias_estrictas():
-    return ("MINISPLIT", "UMA", "PAQUETE", "CHILLER", "BOMBA", "TORRE", "EXTRACTOR")
+    return ("MINISPLIT", "CASETTE", "UMA", "PAQUETE", "CHILLER", "BOMBA", "TORRE", "EXTRACTOR")
 
 
 def categoria_para_filtro(equipo):
@@ -394,10 +397,80 @@ def obtener_equipos(unidad, servicio):
 
     with conectar_db() as conn:
         rows = conn.execute(
-            f"SELECT {', '.join(DB_COLUMNS)} FROM equipos WHERE {' AND '.join(where)} ORDER BY folio, servicio",
+            f"SELECT id, {', '.join(DB_COLUMNS)} FROM equipos WHERE {' AND '.join(where)} ORDER BY folio, servicio",
             params,
         ).fetchall()
     return filas_a_dicts(rows)
+
+
+def parsear_folios(texto):
+    texto = re.sub(r"(\d+)\s*-\s*(\d+)", r"\1-\2", texto or "")
+    tokens = [token.strip() for token in re.split(r"[,;\s]+", texto) if token.strip()]
+    folios = []
+    advertencias = []
+    vistos = set()
+
+    for token in tokens:
+        rango = re.fullmatch(r"(\d+)-(\d+)", token)
+        if rango:
+            inicio, fin = int(rango.group(1)), int(rango.group(2))
+            paso = 1 if inicio <= fin else -1
+            valores = [str(valor) for valor in range(inicio, fin + paso, paso)]
+        else:
+            valores = [token]
+
+        for folio in valores:
+            clave = normalizar_texto(folio)
+            if clave in vistos:
+                advertencias.append(f"Folio repetido ignorado: {folio}")
+                continue
+            vistos.add(clave)
+            folios.append(folio)
+
+    return folios, advertencias
+
+
+def validar_folios(unidad, servicio, folios):
+    validos = []
+    no_encontrados = []
+
+    with conectar_db() as conn:
+        for folio in folios:
+            folio_norm = normalizar_texto(folio)
+            rows = conn.execute(
+                f"SELECT id, {', '.join(DB_COLUMNS)} FROM equipos WHERE folio_norm = ? ORDER BY unidad, servicio",
+                (folio_norm,),
+            ).fetchall()
+
+            if not rows:
+                no_encontrados.append(f"Folio {folio} no encontrado.")
+                continue
+
+            misma_unidad = [row for row in rows if row["unidad"] == unidad]
+            if not misma_unidad:
+                unidades = ", ".join(sorted({row["unidad"] for row in rows if row["unidad"]}))
+                no_encontrados.append(
+                    f"El folio {folio} existe, pero pertenece a otra unidad: {unidades}."
+                )
+                continue
+
+            if servicio in ("Preventivo", "Correctivo"):
+                mismo_servicio = [
+                    row for row in misma_unidad
+                    if normalizar_texto(row["servicio"]) == normalizar_texto(servicio)
+                ]
+                if not mismo_servicio:
+                    servicios = ", ".join(sorted({row["servicio"] for row in misma_unidad if row["servicio"]}))
+                    no_encontrados.append(
+                        f"El folio {folio} pertenece a {servicios} y el filtro actual es {servicio}."
+                    )
+                    continue
+            else:
+                mismo_servicio = misma_unidad
+
+            validos.extend(filas_a_dicts(mismo_servicio))
+
+    return validos, no_encontrados
 
 
 def contar_servicios(equipos):
@@ -852,11 +925,18 @@ class GeneradorApp:
         self.busqueda_var = tk.StringVar()
         self.unidad_var = tk.StringVar()
         self.servicio_var = tk.StringVar(value="Ambos")
+        self.modo_seleccion_var = tk.StringVar(value="todos")
         self.resumen_var = tk.StringVar(value="Busca y selecciona una unidad medica.")
         self.contador_categorias_var = tk.StringVar(value="Equipos incluidos: 0 de 0")
         self.todas_categorias_var = tk.BooleanVar(value=True)
+        self.folios_validos_var = tk.StringVar(value="Folios validos: 0")
+        self.folios_no_encontrados_var = tk.StringVar(value="Folios no encontrados: 0")
         self.categoria_vars = {}
         self.categorias_disponibles = []
+        self.folios_validados = []
+        self.folios_no_encontrados = []
+        self.folios_advertencias = []
+        self.folios_validacion_clave = None
         self.ruta_vars = {
             categoria: tk.StringVar(value=str(ruta))
             for categoria, ruta in RUTAS_FOTOS.items()
@@ -866,8 +946,17 @@ class GeneradorApp:
         self._mostrar_resumen_base()
 
     def _crear_vista(self):
-        contenedor = ttk.Frame(self.root, padding=16)
-        contenedor.pack(fill="both", expand=True)
+        self.scroll_canvas = tk.Canvas(self.root, highlightthickness=0)
+        scroll_bar = ttk.Scrollbar(self.root, orient="vertical", command=self.scroll_canvas.yview)
+        self.scroll_canvas.configure(yscrollcommand=scroll_bar.set)
+        scroll_bar.pack(side="right", fill="y")
+        self.scroll_canvas.pack(side="left", fill="both", expand=True)
+
+        contenedor = ttk.Frame(self.scroll_canvas, padding=16)
+        self.scroll_window = self.scroll_canvas.create_window((0, 0), window=contenedor, anchor="nw")
+        contenedor.bind("<Configure>", self._actualizar_region_scroll)
+        self.scroll_canvas.bind("<Configure>", self._ajustar_ancho_scroll)
+        self.scroll_canvas.bind_all("<MouseWheel>", self._rueda_scroll)
         contenedor.columnconfigure(1, weight=1)
 
         ttk.Label(contenedor, text="Plantilla Word").grid(row=0, column=0, sticky="w", pady=4)
@@ -887,7 +976,7 @@ class GeneradorApp:
         ttk.Label(contenedor, text="Unidad medica").grid(row=3, column=0, sticky="w", pady=4)
         self.unidad_combo = ttk.Combobox(contenedor, textvariable=self.unidad_var, state="readonly")
         self.unidad_combo.grid(row=3, column=1, sticky="ew", padx=8, pady=4)
-        self.unidad_combo.bind("<<ComboboxSelected>>", lambda _event: self._actualizar_categorias())
+        self.unidad_combo.bind("<<ComboboxSelected>>", lambda _event: self._cambio_filtros())
 
         ttk.Label(contenedor, text="Servicio").grid(row=4, column=0, sticky="w", pady=4)
         servicio_combo = ttk.Combobox(
@@ -898,10 +987,34 @@ class GeneradorApp:
             width=18,
         )
         servicio_combo.grid(row=4, column=1, sticky="w", padx=8, pady=4)
-        servicio_combo.bind("<<ComboboxSelected>>", lambda _event: self._actualizar_categorias())
+        servicio_combo.bind("<<ComboboxSelected>>", lambda _event: self._cambio_filtros())
+
+        modo_frame = ttk.LabelFrame(contenedor, text="Equipos a incluir", padding=10)
+        modo_frame.grid(row=5, column=0, columnspan=3, sticky="ew", pady=8)
+        ttk.Radiobutton(
+            modo_frame,
+            text="Todos los equipos",
+            variable=self.modo_seleccion_var,
+            value="todos",
+            command=self._modo_seleccion_cambio,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 18))
+        ttk.Radiobutton(
+            modo_frame,
+            text="Seleccionar por categorías",
+            variable=self.modo_seleccion_var,
+            value="categorias",
+            command=self._modo_seleccion_cambio,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 18))
+        ttk.Radiobutton(
+            modo_frame,
+            text="Seleccionar por folios",
+            variable=self.modo_seleccion_var,
+            value="folios",
+            command=self._modo_seleccion_cambio,
+        ).grid(row=0, column=2, sticky="w")
 
         self.marco_categorias = ttk.LabelFrame(contenedor, text="Categorías de equipos", padding=10)
-        self.marco_categorias.grid(row=5, column=0, columnspan=3, sticky="ew", pady=8)
+        self.marco_categorias.grid(row=6, column=0, columnspan=3, sticky="ew", pady=8)
         self.marco_categorias.columnconfigure(0, weight=1)
 
         controles_categorias = ttk.Frame(self.marco_categorias)
@@ -920,11 +1033,24 @@ class GeneradorApp:
         self.categorias_frame = ttk.Frame(self.marco_categorias)
         self.categorias_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
+        self.marco_folios = ttk.LabelFrame(contenedor, text="Selección por folios", padding=10)
+        self.marco_folios.grid(row=7, column=0, columnspan=3, sticky="ew", pady=8)
+        self.marco_folios.columnconfigure(0, weight=1)
+        self.folios_text = tk.Text(self.marco_folios, height=4, wrap="word")
+        self.folios_text.grid(row=0, column=0, columnspan=4, sticky="ew")
+        self.folios_text.bind("<<Modified>>", self._folios_modificados)
+        ttk.Button(self.marco_folios, text="Validar folios", command=self._validar_folios_ui).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Button(self.marco_folios, text="Limpiar", command=self._limpiar_folios).grid(row=1, column=1, sticky="w", padx=8, pady=(8, 0))
+        ttk.Label(self.marco_folios, textvariable=self.folios_validos_var).grid(row=1, column=2, sticky="w", padx=8, pady=(8, 0))
+        ttk.Label(self.marco_folios, textvariable=self.folios_no_encontrados_var).grid(row=1, column=3, sticky="w", padx=8, pady=(8, 0))
+        self.folios_resumen_text = tk.Text(self.marco_folios, height=6, wrap="word", state="disabled")
+        self.folios_resumen_text.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+
         resumen = ttk.Label(contenedor, textvariable=self.resumen_var, justify="left")
-        resumen.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        resumen.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(8, 4))
 
         marco_fotos = ttk.LabelFrame(contenedor, text="Carpetas de fotos", padding=10)
-        marco_fotos.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=12)
+        marco_fotos.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=12)
         marco_fotos.columnconfigure(1, weight=1)
 
         for fila, (categoria, variable) in enumerate(self.ruta_vars.items()):
@@ -937,17 +1063,27 @@ class GeneradorApp:
             ).grid(row=fila, column=2, pady=3)
 
         acciones = ttk.Frame(contenedor)
-        acciones.grid(row=8, column=0, columnspan=3, sticky="ew", pady=8)
+        acciones.grid(row=10, column=0, columnspan=3, sticky="ew", pady=8)
         acciones.columnconfigure(0, weight=1)
         ttk.Button(acciones, text="Reconstruir base local", command=self._reconstruir_base).grid(row=0, column=0, sticky="w")
         self.boton_generar = ttk.Button(acciones, text="Generar reportes", command=self._generar)
         self.boton_generar.grid(row=0, column=1, sticky="e")
 
         self.log_text = tk.Text(contenedor, height=10, wrap="word")
-        self.log_text.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-        contenedor.rowconfigure(9, weight=1)
+        self.log_text.grid(row=11, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
+        contenedor.rowconfigure(11, weight=1)
 
         self._actualizar_unidades()
+        self._modo_seleccion_cambio()
+
+    def _actualizar_region_scroll(self, _event=None):
+        self.scroll_canvas.configure(scrollregion=self.scroll_canvas.bbox("all"))
+
+    def _ajustar_ancho_scroll(self, event):
+        self.scroll_canvas.itemconfigure(self.scroll_window, width=event.width)
+
+    def _rueda_scroll(self, event):
+        self.scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _mostrar_resumen_base(self):
         resumen = self.db_resumen or inicializar_db()
@@ -991,6 +1127,7 @@ class GeneradorApp:
             variable.set(ruta)
 
     def _actualizar_unidades(self):
+        unidad_anterior = self.unidad_var.get()
         self.unidades_actuales = buscar_unidades(self.busqueda_var.get())
         self.unidad_combo["values"] = self.unidades_actuales
         if self.unidades_actuales:
@@ -998,6 +1135,12 @@ class GeneradorApp:
                 self.unidad_var.set(self.unidades_actuales[0])
         else:
             self.unidad_var.set("")
+        if self.unidad_var.get() != unidad_anterior:
+            self._invalidar_folios()
+        self._actualizar_categorias()
+
+    def _cambio_filtros(self):
+        self._invalidar_folios()
         self._actualizar_categorias()
 
     def _equipos_base_seleccionados(self):
@@ -1027,6 +1170,28 @@ class GeneradorApp:
             ).grid(row=indice // 3, column=indice % 3, sticky="w", padx=(0, 18), pady=2)
 
         self.todas_categorias_var.set(True)
+        self._actualizar_estado_modo()
+        self._actualizar_resumen()
+
+    def _actualizar_estado_modo(self):
+        modo = self.modo_seleccion_var.get()
+        estado_categorias = "normal" if modo == "categorias" else "disabled"
+        self._configurar_estado_hijos(self.marco_categorias, estado_categorias)
+        if modo == "folios":
+            self.marco_folios.grid()
+        else:
+            self.marco_folios.grid_remove()
+
+    def _configurar_estado_hijos(self, widget, estado):
+        for hijo in widget.winfo_children():
+            try:
+                hijo.configure(state=estado)
+            except tk.TclError:
+                pass
+            self._configurar_estado_hijos(hijo, estado)
+
+    def _modo_seleccion_cambio(self):
+        self._actualizar_estado_modo()
         self._actualizar_resumen()
 
     def _categorias_seleccionadas(self):
@@ -1055,8 +1220,109 @@ class GeneradorApp:
         self.todas_categorias_var.set(todas)
         self._actualizar_resumen()
 
+    def _folios_modificados(self, _event=None):
+        if not self.folios_text.edit_modified():
+            return
+        self.folios_text.edit_modified(False)
+        self._invalidar_folios(limpiar_texto=False)
+
+    def _clave_folios_actual(self):
+        return (
+            self.unidad_var.get(),
+            self.servicio_var.get(),
+            self.folios_text.get("1.0", "end-1c"),
+        )
+
+    def _folios_vigentes(self):
+        return self.folios_validacion_clave == self._clave_folios_actual()
+
+    def _invalidar_folios(self, limpiar_texto=False):
+        self.folios_validados = []
+        self.folios_no_encontrados = []
+        self.folios_advertencias = []
+        self.folios_validacion_clave = None
+        self.folios_validos_var.set("Folios validos: 0")
+        self.folios_no_encontrados_var.set("Folios no encontrados: 0")
+        if limpiar_texto and hasattr(self, "folios_text"):
+            self.folios_text.delete("1.0", "end")
+        if hasattr(self, "folios_resumen_text"):
+            self._escribir_resumen_folios("")
+
+    def _limpiar_folios(self):
+        self._invalidar_folios(limpiar_texto=True)
+        self._actualizar_resumen()
+
+    def _escribir_resumen_folios(self, texto):
+        self.folios_resumen_text.configure(state="normal")
+        self.folios_resumen_text.delete("1.0", "end")
+        if texto:
+            self.folios_resumen_text.insert("end", texto)
+        self.folios_resumen_text.configure(state="disabled")
+
+    def _validar_folios_ui(self):
+        unidad = self.unidad_var.get()
+        servicio = self.servicio_var.get()
+        if not unidad:
+            messagebox.showerror("Unidad requerida", "Busca y selecciona una unidad medica.")
+            return
+
+        texto = self.folios_text.get("1.0", "end-1c")
+        folios, advertencias = parsear_folios(texto)
+        if not folios:
+            self._invalidar_folios()
+            messagebox.showwarning("Folios requeridos", "Escribe o pega al menos un folio.")
+            self._actualizar_resumen()
+            return
+
+        validos, no_encontrados = validar_folios(unidad, servicio, folios)
+        self.folios_validados = validos
+        self.folios_no_encontrados = no_encontrados
+        self.folios_advertencias = advertencias
+        self.folios_validacion_clave = self._clave_folios_actual()
+        self.folios_validos_var.set(f"Folios validos: {len(validos)}")
+        self.folios_no_encontrados_var.set(f"Folios no encontrados: {len(no_encontrados)}")
+        self._mostrar_validacion_folios()
+        self._actualizar_resumen()
+
+    def _mostrar_validacion_folios(self):
+        lineas = []
+        if self.folios_validados:
+            lineas.append("Equipos encontrados:")
+            for equipo in self.folios_validados:
+                lineas.append(
+                    "Folio: {folio} | Servicio: {servicio} | Categoria: {categoria} | "
+                    "Equipo: {equipo} | Marca: {marca} | Modelo: {modelo} | "
+                    "Serie: {serie} | Inventario: {inventario}".format(
+                        folio=equipo.get("folio", ""),
+                        servicio=equipo.get("servicio", ""),
+                        categoria=categoria_para_filtro(equipo),
+                        equipo=equipo.get("equipo", ""),
+                        marca=equipo.get("marca", ""),
+                        modelo=equipo.get("modelo", ""),
+                        serie=equipo.get("serie", ""),
+                        inventario=equipo.get("inventario", ""),
+                    )
+                )
+        if self.folios_no_encontrados:
+            lineas.append("")
+            lineas.append("Folios no encontrados o no validos:")
+            lineas.extend(self.folios_no_encontrados)
+        if self.folios_advertencias:
+            lineas.append("")
+            lineas.append("Advertencias:")
+            lineas.extend(self.folios_advertencias)
+        self._escribir_resumen_folios("\n".join(lineas))
+
     def _equipos_seleccionados(self):
         equipos = self._equipos_base_seleccionados()
+        modo = self.modo_seleccion_var.get()
+        if modo == "todos":
+            return equipos
+        if modo == "folios":
+            if self._folios_vigentes():
+                return list(self.folios_validados)
+            return []
+
         seleccionadas = self._categorias_seleccionadas()
         if len(seleccionadas) == len(self.categorias_disponibles):
             return equipos
@@ -1069,19 +1335,34 @@ class GeneradorApp:
         equipos_base = self._equipos_base_seleccionados()
         equipos = self._equipos_seleccionados()
         preventivos, correctivos = contar_servicios(equipos)
+        modo = self.modo_seleccion_var.get()
         categorias = self._categorias_seleccionadas()
-        categorias_texto = ", ".join(categorias) if categorias else "Ninguna"
+        if modo == "todos":
+            detalle_seleccion = "Modo: Todos los equipos"
+        elif modo == "folios":
+            if self._folios_vigentes():
+                folios = ", ".join(equipo.get("folio", "") for equipo in equipos)
+                detalle_seleccion = (
+                    "Modo: Seleccion por folios\n"
+                    f"Folios validos: {len(equipos)}\n"
+                    f"Folios: {folios or 'Ninguno'}"
+                )
+            else:
+                detalle_seleccion = "Modo: Seleccion por folios\nFolios pendientes de validar"
+        else:
+            categorias_texto = ", ".join(categorias) if categorias else "Ninguna"
+            detalle_seleccion = f"Modo: Seleccion por categorias\nCategorías seleccionadas: {categorias_texto}"
         self.contador_categorias_var.set(f"Equipos incluidos: {len(equipos)} de {len(equipos_base)}")
         self.resumen_var.set(
             "Hospital seleccionado: {unidad}\n"
             "Tipo de servicio: {servicio}\n"
-            "Categorías seleccionadas: {categorias}\n"
+            "{detalle}\n"
             "Cantidad total de equipos que se generarán: {total}\n"
             "Total preventivos: {preventivos}\n"
             "Total correctivos: {correctivos}".format(
                 unidad=unidad or "Sin seleccion",
                 servicio=servicio,
-                categorias=categorias_texto,
+                detalle=detalle_seleccion,
                 total=len(equipos),
                 preventivos=preventivos,
                 correctivos=correctivos,
@@ -1099,17 +1380,24 @@ class GeneradorApp:
     def _generar(self):
         unidad = self.unidad_var.get()
         servicio = self.servicio_var.get()
+        modo = self.modo_seleccion_var.get()
         categorias = self._categorias_seleccionadas()
         equipos = self._equipos_seleccionados()
 
         if not unidad:
             messagebox.showerror("Unidad requerida", "Busca y selecciona una unidad medica.")
             return
-        if not categorias:
+        if modo == "categorias" and not categorias:
             messagebox.showwarning("Categorías requeridas", "Selecciona al menos una categoria de equipos.")
             return
+        if modo == "folios" and not self._folios_vigentes():
+            messagebox.showwarning("Folios pendientes", "Valida nuevamente los folios para la unidad y servicio seleccionados.")
+            return
         if not equipos:
-            messagebox.showwarning("Sin equipos", "No hay equipos para la unidad y servicio seleccionados.")
+            if modo == "folios":
+                messagebox.showwarning("Sin folios validos", "No hay ningun folio valido para generar.")
+            else:
+                messagebox.showwarning("Sin equipos", "No hay equipos para la unidad y servicio seleccionados.")
             return
 
         template_path = self.template_var.get().strip()
@@ -1117,6 +1405,25 @@ class GeneradorApp:
         if not os.path.exists(template_path):
             messagebox.showerror("Plantilla no encontrada", "Selecciona una plantilla Word valida.")
             return
+
+        if modo == "folios":
+            folios = ", ".join(equipo.get("folio", "") for equipo in equipos)
+            if not messagebox.askyesno(
+                "Confirmar generacion",
+                "Unidad: {unidad}\n"
+                "Servicio: {servicio}\n"
+                "Modo: Seleccion por folios\n"
+                "Folios validos: {validos}\n"
+                "Folios: {folios}\n"
+                "Equipos que se generaran: {total}".format(
+                    unidad=unidad,
+                    servicio=servicio,
+                    validos=len(equipos),
+                    folios=folios,
+                    total=len(equipos),
+                ),
+            ):
+                return
 
         rutas_fotos = {categoria: var.get().strip() for categoria, var in self.ruta_vars.items()}
 
