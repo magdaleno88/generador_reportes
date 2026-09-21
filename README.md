@@ -1,4 +1,4 @@
-Generador de reportes de servicio
+# Generador de reportes de servicio
 
 **De registros de equipos y fotografías a reportes Word listos para revisión.** Esta aplicación de escritorio automatiza la elaboración de reportes de mantenimiento para equipos de unidades médicas. Permite seleccionar una unidad, filtrar los equipos que se incluirán y producir un documento individual por equipo, además de un reporte consolidado.
 
