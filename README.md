@@ -1,5 +1,7 @@
 # Generador de reportes de servicio
 
+[English summary](#english-summary) · [Generar un ejemplo con datos ficticios](examples/create_demo_report.py) · [Caso de estudio / Case study](docs/CASE_STUDY.md)
+
 **De registros de equipos y fotografías a reportes Word listos para revisión.** Esta aplicación de escritorio automatiza la elaboración de reportes de mantenimiento para equipos de unidades médicas. Permite seleccionar una unidad, filtrar los equipos que se incluirán y producir un documento individual por equipo, además de un reporte consolidado.
 
 El proyecto reúne procesamiento de datos, búsquedas con SQLite, generación de documentos y una interfaz visual en Python. Está pensado para reducir tareas repetitivas al preparar reportes de servicio preventivo y correctivo.
@@ -52,7 +54,7 @@ Necesitas Python 3 con Tkinter disponible y las dependencias de Word e imágenes
 ```bash
 git clone https://github.com/magdaleno88/generador_reportes.git
 cd generador_reportes
-python -m pip install python-docx docxcompose Pillow
+python -m pip install -r requirements.txt
 python "generador aires.py"
 ```
 
@@ -102,4 +104,24 @@ La plantilla Word puede incluir los marcadores `{{FOLIO}}`, `{{REGION}}`, `{{UNI
 - Interfaz de escritorio para un proceso operativo de varias etapas.
 - Generación por lotes con salida individual, consolidada y registro de incidencias.
 
-**Alcance actual:** es una aplicación de escritorio ejecutada desde el código fuente. El repositorio todavía no incluye un instalador ni una suite de pruebas automatizadas. Las fotografías son externas al repositorio y deben seleccionarse en la interfaz.
+**Alcance actual:** es una aplicación de escritorio ejecutada desde el código fuente y todavía no incluye un instalador. Las fotografías operativas son externas al repositorio y deben seleccionarse en la interfaz. Las pruebas automatizadas cubren la selección de folios y la generación de un reporte individual.
+
+## Demostración reproducible
+
+Puedes generar un reporte de ejemplo mediante la función `generar_reporte` del proyecto usando registros e ilustraciones ficticios:
+
+```bash
+python examples/create_demo_report.py
+```
+
+La demostración produce un reporte individual; la aplicación completa también reúne reportes en un documento consolidado. Para comprobar la selección de folios y la sustitución de campos en Word:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## English summary
+
+This desktop application turns equipment records and photos into individual and consolidated Word service reports. I built a Tkinter workflow for selecting a medical unit, filtering equipment, validating record numbers and generating documents from a template. SQLite supports local search; `python-docx`, Pillow and `docxcompose` handle document and image output.
+
+Start with the [fictional report generator](examples/create_demo_report.py), then read the [case study](docs/CASE_STUDY.md). Run `python examples/create_demo_report.py` to create a sample without operational data. Automated tests cover record-number selection and Word field replacement. The demo does not establish a measured time saving.

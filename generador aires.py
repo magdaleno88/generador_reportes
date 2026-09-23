@@ -18,7 +18,6 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
-from docxcompose.composer import Composer
 from PIL import Image as PILImage
 
 # ================= CONFIG =================
@@ -894,6 +893,8 @@ def generar_reportes(
     if not archivos:
         log_dual("No se pudo generar ningun documento individual.")
         return None, 0, str(log_path)
+
+    from docxcompose.composer import Composer
 
     log_dual("Uniendo documentos con docxcompose...")
     master = Document(archivos[0])
